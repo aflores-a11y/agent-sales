@@ -1,0 +1,78 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agent_tasty}
+      POSTGRES_USER: ${POSTGRES_USER:-agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agent} -d ${POSTGRES_DB:-agent_tasty}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  agent-tasty:
+    build: ./agent-tasty
+    env_file: ./agent-tasty/.env
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agent}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-agent_tasty}
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sync-sales:
+    build: ./agent-tasty
+    env_file: ./agent-tasty/.env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agent}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-agent_tasty}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["python", "scripts/sync_sales_cache.py", "--days", "10", "--workers", "100"]
+    restart: "no"
+
+  sync-sales-cron:
+    build: ./agent-tasty
+    env_file: ./agent-tasty/.env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agent}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-agent_tasty}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["cron", "-f"]
+    restart: unless-stopped
+
+  wapp-gateway:
+    build: ./wapp-gateway
+    env_file: ./wapp-gateway/.env
+    environment:
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3100:3100"
+    depends_on:
+      - redis
+    volumes:
+      - wapp-auth:/app/.wwebjs_auth
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  pgdata:
+  wapp-auth:
